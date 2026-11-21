@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SOULBOUND — The Original</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:radial-gradient(ellipse at center,#27394b,#101725 75%);color:#e9f2d0;font-family:monospace;padding:12px}
+#shell{width:min(96vw,900px);padding:26px 34px 35px;background:linear-gradient(145deg,#d7d4b9,#aaa990);border-radius:22px 22px 75px 22px;box-shadow:0 18px 0 #666958,0 28px 50px #0009;border:4px solid #e9e5ce}
+#brand{color:#515849;font-weight:bold;letter-spacing:4px;font-size:18px;margin:0 0 12px 4px}
+#brand span{font-size:11px;letter-spacing:2px;font-style:italic}
+#screen{width:100%;aspect-ratio:4/3;background:#080b12;border:12px solid #343d3a;border-radius:8px;box-shadow:inset 0 0 20px #000;overflow:hidden}
+canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
+#bottom{display:flex;justify-content:space-between;align-items:center;padding:23px 8px 0;color:#41483d}
+#dpad{font-size:32px;font-weight:bold;line-height:1.1;text-align:center}
+#dpad small{font-size:10px;display:block}
+.buttons{display:flex;gap:17px;transform:rotate(-20deg)}
+.btn{width:48px;height:48px;border-radius:50%;background:#8c354a;border:4px solid #702538;box-shadow:0 4px 0 #54202d;display:grid;place-items:center;color:#f4d9d6;font-weight:bold}
+#start{font-size:11px;letter-spacing:3px;transform:rotate(-25deg)}
+#message{min-height:30px;color:#ffe89a;text-align:center;font-size:15px;line-height:1.5}
+#hint{color:#d6e6bd;text-align:center;font-size:13px;line-height:1.9}
+@media(max-width:550px){#shell{padding:15px 13px 24px;border-radius:15px 15px 45px 15px}#bottom{padding-top:15px}.btn{width:38px;height:38px}#brand{font-size:14px}#hint{font-size:11px}}
+</style>
+</head>
+<body>
+<div id="shell">
+ <div id="brand">SOULBOUND <span>COLOR ADVENTURE</span></div>
+ <div id="screen"><canvas id="game" width="320" height="240"></canvas></div>
+ <div id="bottom">
+  <div id="dpad">▲<br>◀　●　▶<br>▼<small>DIRECTION</small></div>
+  <div id="start">SELECT　 START</div>
+  <div class="buttons"><div class="btn">B</div><div class="btn">A</div></div>
+ </div>
+</div>
+<div id="message">A forgotten adventure is waiting...</div>
+<div id="hint">
+ WASD / ARROWS: MOVE &nbsp; SPACE: ATTACK &nbsp; E: INTERACT<br>
+ SHIFT: SOUL DASH &nbsp; I: INVENTORY &nbsp; M: MENU &nbsp; ENTER: SELECT
+</div>
+<script>
+(()=>{
+"use strict";
+const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
+const W=320,H=240,T=16,keys={};
+let tick=0,screen="title",crystals=0,health=5,soul=100;
+let hasSword=false,hasArmor=false;
+let attack=0,dialogue="",dialogueTime=0,inventory=false,inventoryTab=0;
+let menuOpen=false,menuChoice=0;
+let particles=[],texts=[],saveFlash=0,trapdoorTimer=0;
+let caveEntered=false,caveStage=0,oldStoryUnlocked=false;
+let bossIntro=0,bossX=300,bossY=120,bossHP=100;
+let secretPathOpen=false,bossDefeated=false,armorCollected=false;
+let magmaActive=false,magmaHP=160,magmaX=240,magmaY=105,magmaAttack=0;
+let creditsTime=0,creditsPending=false;
+let camera={x:0,y:0};
+const mapW=64,mapH=48;
+const player={x:144,y:160,dir:2,walk:0,hurt:0};
+const npc={x:24*T,y:10*T},shrine={x:51*T,y:12*T};
+const crystalSpots=[[8,7],[15,12],[22,16],[29,19],[38,11],[53,20],[17,33],[25,37]].map(([x,y])=>({x:x*T+8,y:y*T+8,got:false}));
+const enemies=[
+{x:34*T,y:16*T,hp:3,max:3,alive:true},
+{x:39*T,y:25*T,hp:3,max:3,alive:true},
+{x:20*T,y:35*T,hp:4,max:4,alive:true},
+{x:51*T,y:35*T,hp:4,max:4,alive:true}
+];
+const skeletons=[
+{x:92,y:105,hp:3,max:3,alive:true},
+{x:226,y:125,hp:3,max:3,alive:true},
+{x:158,y:48,hp:3,max:3,alive:true}
+];
+const deadBones=[{x:65,y:65},{x:260,y:73},{x:80,y:170},{x:245,y:180},{x:160,y:145}];
+const lous={x:160,y:88};
+
+function say(s){document.getElementById("message").textContent=s}
+function talk(s){dialogue=s;dialogueTime=260;say(s)}
+function rect(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.floor(x),Math.floor(y),w,h)}
+function txt(s,x,y,c="#fff",size=10){ctx.fillStyle=c;ctx.font="bold "+size+"px monospace";ctx.fillText(s,Math.floor(x),Math.floor(y))}
+function near(x,y,d=30){return Math.hypot(player.x-x,player.y-y)<d}
+function particlesAt(x,y,color,n=10){
+ for(let i=0;i<n;i++){let a=Math.random()*6.28,s=.5+Math.random()*2;particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:25,color})}
+}
+function floatAt(x,y,s,c){texts.push({x,y,s,c,life:45})}
+
+// FOREST
+function terrain(x,y){
+ if(x<=0||y<=0||x>=mapW-1||y>=mapH-1)return 1;
+ let path=Math.abs(y-(18+Math.sin(x*.23)*5))<3;
+ let clearing=x>5&&x<18&&y>5&&y<15;
+ let village=x>19&&x<34&&y>5&&y<19;
+ let shrineArea=x>43&&x<57&&y>5&&y<18;
+ let lower=Math.abs(x-(34+Math.sin(y*.17)*5))<3;
+ let lowerClearing=x>10&&x<28&&y>29&&y<41;
+ return path||clearing||village||shrineArea||lower||lowerClearing?0:((x*17+y*31+x*y*3)%11<2?1:0);
+}
+const world=Array.from({length:mapH},(_,y)=>Array.from({length:mapW},(_,x)=>terrain(x,y)));
+const trees=[];
+for(let y=2;y<mapH-2;y++)for(let x=2;x<mapW-2;x++)if(world[y][x]!==1&&(x*7+y*13)%9===0)trees.push({x:x*T+8,y:y*T+8});
+function tile(x,y){return world[Math.floor(y/T)]?.[Math.floor(x/T)]??1}
+function forestSolid(x,y){return tile(x-5,y-5)||tile(x+5,y-5)||tile(x-5,y+5)||tile(x+5,y+5)}
+function moveForest(dx,dy){if(dx&&!forestSolid(player.x+dx,player.y))player.x+=dx;if(dy&&!forestSolid(player.x,player.y+dy))player.y+=dy}
+function updateCamera(){camera.x=Math.max(0,Math.min(mapW*T-W,player.x-W/2));camera.y=Math.max(0,Math.min(mapH*T-H,player.y-H/2))}
+function ground(x,y,sx,sy){
+ let a=["#397b52","#36754d","#3b8053","#34724b","#408457"][Math.abs(x*13+y*7)%5];
+ rect(sx,sy,16,16,a);if((x+y)%5===0)rect(sx+5,sy+7,2,2,"#66a65c");
+}
+function tree(x,y){
+ let sx=x-camera.x,sy=y-camera.y;
+ rect(sx-5,sy+1,11,10,"#754a37");rect(sx-8,sy-9,16,13,"#174e3b");
+ rect(sx-6,sy-12,12,8,"#28734a");rect(sx-3,sy-14,6,5,"#47985a");
+}
+function house(x,y,roof,wall){
+ let sx=x*T-camera.x,sy=y*T-camera.y;
+ rect(sx-8,sy-5,32,23,wall);rect(sx-11,sy-10,38,8,roof);
+ rect(sx-5,sy+4,9,14,"#493d39");rect(sx+13,sy+2,6,6,"#b9e3df");
+}
+function village(){
+ house(21,7,"#b56b52","#b58a62");house(29,7,"#8d596b","#b28b67");
+ house(22,14,"#9b7650","#c19a70");house(30,14,"#6c718f","#a98768");house(25,10,"#b56b52","#b58a62");
+ for(let i=0;i<8;i++){rect(20*T-camera.x+i*9,18*T-camera.y,5,2,"#876747");rect(20*T-camera.x+i*9,18*T-camera.y+5,5,2,"#876747")}
+}
+function crystal(c){
+ let x=c.x-camera.x,y=c.y-camera.y,p=Math.sin(tick*.12+x)*1.5;
+ ctx.globalAlpha=.2;rect(x-9-p,y-12-p,18+p*2,24+p*2,"#4cfaff");ctx.globalAlpha=1;
+ rect(x-3,y-5,6,10,"#48e5ee");rect(x-2,y-8,4,4,"#a9ffff");rect(x-1,y-3,2,6,"#fff");
+}
+function playerSprite(x,y){
+ let b=Math.sin(player.walk)*1.2;
+ rect(x-6,y+5,13,3,"#244536");rect(x-4,y+2+b,3,4,"#473b39");rect(x+2,y+2-b,3,4,"#473b39");
+ rect(x-5,y-5,10,9,"#e4d8a1");rect(x-4,y-4,8,8,"#387ed0");rect(x-5,y-2,10,3,"#245ba9");
+ rect(x-4,y-11,8,7,"#e9b987");rect(x-5,y-12,10,4,"#573a30");rect(x-4,y-14,8,3,"#74503a");
+ rect(x-2,y-8,1,1,"#252c36");rect(x+2,y-8,1,1,"#252c36");
+ if(hasArmor){
+  rect(x-6,y-5,12,9,"#b7bac6");rect(x-4,y-4,8,7,"#727e9b");
+  rect(x-5,y-2,10,2,"#d7d9e4");rect(x-7,y-4,3,5,"#d5b75d");rect(x+4,y-4,3,5,"#d5b75d");
+ }
+ if(hasSword&&attack===0){
+  if(player.dir===0){rect(x+5,y-13,3,10,"#dce6ee");rect(x+4,y-5,5,2,"#8b6845")}
+  if(player.dir===1){rect(x+7,y-7,10,3,"#dce6ee");rect(x+7,y-8,2,5,"#8b6845")}
+  if(player.dir===2){rect(x-7,y+2,3,10,"#dce6ee");rect(x-8,y+3,5,2,"#8b6845")}
+  if(player.dir===3){rect(x-17,y-7,10,3,"#dce6ee");rect(x-8,y-8,2,5,"#8b6845")}
+ }
+ if(player.hurt>0&&tick%4<2)rect(x-7,y-15,14,24,"#fff");
+}
+function drawNPC(){
+ let x=npc.x-camera.x,y=npc.y-camera.y;
+ rect(x-5,y+2,10,6,"#584a7b");rect(x-4,y-7,8,8,"#e7bd8c");rect(x-5,y-9,10,4,"#ded9e2");txt("!",x-2,y-17,"#fff2a2",12);
+}
+function drawForest(){
+ rect(0,0,W,H,"#244b3b");
+ let left=Math.floor(camera.x/T),top=Math.floor(camera.y/T);
+ for(let y=top;y<top+18;y++)for(let x=left;x<left+23;x++){
+  let sx=x*T-camera.x,sy=y*T-camera.y;
+  if(world[y]?.[x]===1){rect(sx,sy,16,16,"#244b3b");rect(sx+1,sy+1,14,14,"#326a48");rect(sx+2,sy+2,12,3,"#438b55")}
+  else{ground(x,y,sx,sy);if(x>19&&x<34&&y>5&&y<19)rect(sx,sy,16,16,"#9a966e")}
+ }
+ trees.forEach(t=>{if(t.x>camera.x-20&&t.x<camera.x+340&&t.y>camera.y-20&&t.y<camera.y+260)tree(t.x,t.y)});
+ village();
+ let sx=shrine.x-camera.x,sy=shrine.y-camera.y;
+ rect(sx-17,sy-10,34,25,"#625b70");rect(sx-13,sy-14,26,5,"#aaa1ba");rect(sx-9,sy-7,18,19,"#81728e");rect(sx-3,sy-4,6,16,"#302c48");
+ if(!hasSword){
+  let x=10*T+8-camera.x,y=11*T+8-camera.y;
+  rect(x-1,y-8,3,13,"#c8d2dc");rect(x-4,y+3,9,2,"#785239");txt("E",x-2,y-15,"#fff5c3",9);
+ }
+ drawNPC();
+ for(const c of crystalSpots)if(!c.got)crystal(c);
+ enemies.forEach(e=>{if(e.alive){let x=e.x-camera.x,y=e.y-camera.y;rect(x-7,y+3,14,4,"#25433d");rect(x-6,y-4,12,8,"#653d86");rect(x-4,y-8,8,5,"#a66bd0");rect(x-4,y-2,2,2,"#fff");rect(x+2,y-2,2,2,"#fff")}});
+ playerSprite(player.x-camera.x,player.y-camera.y);
+ drawAttack();drawParticles();hud();
+ if(dialogueTime>0)drawDialogue();if(inventory)drawInventory();
+ if(trapdoorTimer>0){ctx.globalAlpha=.5;rect(0,0,W,H,"#9c68df");ctx.globalAlpha=1;txt("THE SHRINE REJECTS YOU...",52,112,"#fff0d1",12)}
+}
+
+// CAVES
+function caveFloor(){
+ rect(0,0,W,H,"#05060b");rect(25,25,270,190,"#292638");rect(30,30,260,180,"#51495e");rect(35,35,250,180,"#393449");
+ for(let y=40;y<207;y+=16)for(let x=40;x<281;x+=16)rect(x,y,15,15,(x+y)%3?"#514a61":"#484257");
+ rect(25,25,270,13,"#171522");rect(25,25,13,190,"#171522");rect(282,25,13,190,"#171522");rect(25,202,270,13,"#171522");
+ for(let i=0;i<5;i++){let x=47+i*52,y=58+(i%2)*105;rect(x-3,y-7,6,14,i%2?"#879aff":"#ad83ee");rect(x-2,y-10,4,4,"#e4d7ff")}
+ rect(0,0,W,23,"#05060b");rect(0,217,W,23,"#05060b");rect(0,0,22,H,"#05060b");rect(298,0,22,H,"#05060b");
+ txt("UNDERGROUND CAVERN",91,17,"#8d83a8",8);
+}
+function bigCaveFloor(){
+ rect(0,0,W,H,"#03050a");rect(7,18,306,207,"#191725");rect(13,24,294,195,"#393448");rect(20,31,280,181,"#292638");
+ for(let y=36;y<210;y+=16)for(let x=25;x<296;x+=16){
+  rect(x,y,15,15,(x*3+y)%4?"#484257":"#554a60");
+  if((x+y)%7===0)rect(x+4,y+5,3,2,"#6d6078");
+ }
+ rect(7,18,306,10,"#171421");rect(7,18,10,207,"#171421");rect(303,18,10,207,"#171421");rect(7,216,306,9,"#171421");
+ for(let i=0;i<12;i++){let x=20+i*24;rect(x,27,8,7,"#62546d");rect(x+3,33,5,5,"#77627b");rect(x+8,207,7,8,"#55465f")}
+ for(let i=0;i<7;i++){
+  let x=35+i*39,y=48+(i%3)*49,glow=.12+Math.sin(tick*.06+i)*.06;
+  ctx.globalAlpha=glow;rect(x-8,y-12,18,27,"#70eaff");ctx.globalAlpha=1;
+  rect(x,y-8,4,15,"#57dbe9");rect(x+4,y-3,3,10,"#a8f7ff");rect(x-3,y-12,4,5,"#b9ffff");
+ }
+ for(let i=0;i<8;i++){let x=29+i*37;rect(x,29,5,10,"#76677d");rect(x+1,36,3,7,"#55465f");rect(x+5,198,7,12,"#716079");rect(x+6,194,4,6,"#93809a")}
+ rect(103,65,12,55,"#66556e");rect(106,65,6,55,"#8d7891");rect(208,126,12,55,"#66556e");rect(211,126,6,55,"#8d7891");
+ rect(35,157,43,25,"#142e4a");rect(39,160,35,3,"#3885a5");rect(237,54,49,25,"#142e4a");rect(241,57,41,3,"#3885a5");
+ rect(43,166,26,2,"#65d9e4");rect(246,64,31,2,"#65d9e4");
+ rect(130,68,54,2,"#786c8d");rect(130,68,2,35,"#786c8d");rect(184,68,2,35,"#786c8d");rect(130,101,56,2,"#786c8d");
+ txt("THE DEEP CAVERN",102,15,"#c1b4e8",9);
+}
+function deadSkeleton(s){
+ let x=s.x,y=s.y;rect(x-7,y-2,14,3,"#b5b5a8");rect(x-3,y-5,6,5,"#d0d0c0");
+ rect(x-10,y+1,5,2,"#c5c5b5");rect(x+5,y+1,5,2,"#c5c5b5");rect(x-4,y+4,4,2,"#c5c5b5");rect(x+2,y+4,4,2,"#c5c5b5");
+}
+function skeleton(s){
+ let x=s.x,y=s.y;rect(x-5,y-9,10,7,"#d8d8c8");rect(x-4,y-7,2,2,"#292d39");rect(x+2,y-7,2,2,"#292d39");
+ rect(x-3,y-1,6,7,"#c8c8b8");rect(x-7,y,4,2,"#d8d8c8");rect(x+3,y,4,2,"#d8d8c8");
+ rect(x-4,y+6,3,5,"#d8d8c8");rect(x+2,y+6,3,5,"#d8d8c8");
+ rect(x-8,y-14,16,3,"#25202d");rect(x-7,y-13,14*s.hp/s.max,1,"#ff6873");
+}
+function drawLous(x,y){
+ rect(x-6,y+3,12,7,"#384a67");rect(x-5,y-7,10,10,"#e6bd91");rect(x-6,y-10,12,5,"#493a36");
+ rect(x-3,y-5,2,2,"#29283b");rect(x+2,y-5,2,2,"#29283b");rect(x-8,y-1,4,3,"#6e91bc");rect(x+4,y-1,4,3,"#6e91bc");
+ txt("LOUS",x-12,y-16,"#ffe9a7",9);
+}
+function drawArmor(){
+ let x=70,y=180;
+ ctx.globalAlpha=.2;rect(x-16,y-15,32,31,"#e8c66b");ctx.globalAlpha=1;
+ rect(x-12,y+5,24,5,"#66536e");rect(x-9,y+1,18,5,"#9c8a9d");
+ rect(x-7,y-10,14,13,"#aab7c9");rect(x-5,y-13,10,5,"#e2e8f0");
+ rect(x-10,y-7,5,10,"#d5bd6e");rect(x+5,y-7,5,10,"#d5bd6e");
+ rect(x-3,y-5,6,6,"#5c708b");rect(x-2,y-4,4,4,"#a5edec");
+ txt("ARMOR",x-17,y-19,"#ffe6a0",8);
+}
+function drawCracks(){
+ ctx.lineWidth=2;ctx.strokeStyle="#fff0ff";ctx.beginPath();
+ ctx.moveTo(288,43);ctx.lineTo(273,62);ctx.lineTo(290,78);ctx.lineTo(270,98);ctx.lineTo(289,120);ctx.lineTo(274,145);
+ ctx.moveTo(30,43);ctx.lineTo(47,62);ctx.lineTo(29,82);ctx.lineTo(48,104);ctx.lineTo(29,128);ctx.lineTo(46,151);ctx.stroke();
+}
+function drawBrokenWalls(){
+ rect(280,35,15,166,"#0a0910");
+ for(let i=0;i<14;i++){let x=276+(i%4)*6,y=39+i*11;rect(x,y,5,5,i%2?"#8a788c":"#574c67")}
+ rect(25,30,13,72,"#171522");rect(25,140,13,70,"#171522");rect(25,102,6,38,"#171522");rect(31,110,8,22,"#09080e");
+}
+function kingSkelly(){
+ let x=bossX,y=bossY;
+ rect(x-24,y+20,48,10,"#29202f");rect(x-18,y-6,36,31,"#d5d2c2");
+ rect(x-23,y-2,9,18,"#c5c2b5");rect(x+14,y-2,9,18,"#c5c2b5");
+ rect(x-15,y-25,30,23,"#e4e0cf");rect(x-12,y-20,8,8,"#251e2a");rect(x+4,y-20,8,8,"#251e2a");
+ rect(x-10,y-18,4,4,"#ff424e");rect(x+6,y-18,4,4,"#ff424e");rect(x-6,y-7,12,4,"#6b5960");
+ rect(x-17,y-32,34,7,"#d8b54d");rect(x-14,y-39,7,9,"#f4d36c");rect(x-3,y-43,7,13,"#f4d36c");rect(x+8,y-39,7,9,"#f4d36c");
+ rect(x-30,y+4,12,7,"#e5dfca");rect(x+18,y+4,12,7,"#e5dfca");rect(x-16,y+25,10,10,"#c4bfad");rect(x+7,y+25,10,10,"#c4bfad");
+}
+function bossBar(){
+ rect(35,5,250,27,"#100e19");rect(38,8,244,21,"#443047");txt("KING SKELLY",115,17,"#ffe4a0",11);
+ rect(49,21,222,6,"#17121d");rect(50,22,220*bossHP/100,4,"#d83c59");
+}
+
+// MAGMA BOSS
+function magmaBoss(){
+ let x=magmaX,y=magmaY;
+ // molten shadow and huge body
+ ctx.globalAlpha=.25;rect(x-30,y-28,60,68,"#ff3b16");ctx.globalAlpha=1;
+ rect(x-22,y+22,44,15,"#4a160f");
+ rect(x-23,y-15,46,42,"#7d2919");rect(x-19,y-24,38,17,"#a83a1b");
+ rect(x-16,y-20,32,13,"#f06a25");
+ rect(x-13,y-12,9,8,"#fff0a0");rect(x+4,y-12,9,8,"#fff0a0");
+ rect(x-11,y-10,5,5,"#28131a");rect(x+6,y-10,5,5,"#28131a");
+ rect(x-9,y+2,18,4,"#34151a");
+ rect(x-30,y-9,9,25,"#a43b1b");rect(x+21,y-9,9,25,"#a43b1b");
+ rect(x-19,y+25,12,13,"#a83a1b");rect(x+7,y+25,12,13,"#a83a1b");
+ // glowing magma cracks
+ rect(x-15,y-3,4,12,"#ffcf48");rect(x+11,y-1,4,12,"#ffcf48");rect(x-3,y+9,6,9,"#ff9a24");
+ rect(x-15,y-28,8,8,"#d95b22");rect(x-5,y-33,10,10,"#ff9a27");rect(x+7,y-27,8,8,"#d95b22");
+}
+function magmaBar(){
+ rect(30,5,260,29,"#180c12");rect(33,8,254,23,"#512018");
+ txt("MAGMA BOSS",112,18,"#ffe1a0",11);
+ rect(44,22,232,6,"#251017");rect(45,23,230*Math.max(0,magmaHP)/160,4,"#ff5b24");
+}
+function drawMagmaCave(){
+ bigCaveFloor();
+ // Lava pools
+ rect(25,188,85,22,"#6b210f");rect(29,192,77,13,"#f15a19");rect(38,194,50,3,"#ffbd42");
+ rect(217,35,75,18,"#6b210f");rect(221,39,67,10,"#f15a19");
+ for(let i=0;i<7;i++){let x=35+i*40;rect(x,183+Math.sin(tick*.1+i)*3,5,3,"#ffcb4c")}
+ if(magmaActive&&!bossDefeated){magmaBoss();magmaBar()}
+ else if(bossDefeated){txt("THE MAGMA BOSS HAS FALLEN!",68,82,"#ffe7a4",11)}
+ playerSprite(player.x,player.y);
+ drawAttack();drawParticles();hud();
+ if(dialogueTime>0)drawDialogue();if(inventory)drawInventory();
+}
+function drawCave(){
+ if(caveStage===2&&magmaActive){drawMagmaCave();return}
+ if(caveStage===2){
+  bigCaveFloor();
+  if(!armorCollected)drawArmor();
+  if(!lousRanAway)drawLous(lous.x,lous.y);
+  playerSprite(player.x,player.y);drawParticles();hud();
+  if(dialogueTime>0)drawDialogue();if(inventory)drawInventory();return;
+ }
+ caveFloor();
+ if(caveStage===0){
+  deadBones.forEach(deadSkeleton);skeletons.forEach(s=>{if(s.alive)skeleton(s)});
+  drawLous(lous.x,lous.y);playerSprite(player.x,player.y);drawAttack();drawParticles();hud();
+  if(dialogueTime>0)drawDialogue();if(inventory)drawInventory();return;
+ }
+ if(bossIntro>0){
+  drawCracks();if(bossIntro<155)drawBrokenWalls();if(bossIntro<130)kingSkelly();drawLous(lous.x,lous.y);
+  if(bossIntro>155)txt("CRACK... CRACK...",103,183,"#f7d7ff",11);
+  else if(bossIntro>115)txt("THE WALLS ARE BREAKING!",70,183,"#ffd9a1",11);
+  else txt("LOUS IS RUNNING! FOLLOW HIM!",63,183,"#fff0a6",10);
+ }else{drawBrokenWalls();kingSkelly();drawLous(lous.x,lous.y);if(secretPathOpen)txt("FOLLOW LOUS TO THE LEFT!",73,91,"#fff0a6",9)}
+ playerSprite(player.x,player.y);drawParticles();hud();bossBar();
+ if(dialogueTime>0)drawDialogue();if(inventory)drawInventory();
+}
+
+// UI
+function hud(){
+ rect(5,5,154,34,"#152d39");rect(7,7,150,30,"#304b4e");
+ txt("SOULBOUND",12,19,"#f8e8a8",11);txt("HP",12,32,"#ffb2a8",9);
+ for(let i=0;i<5;i++)txt(i<health?"♥":"♡",34+i*13,33,i<health?"#ff7777":"#9b7777",12);
+ if(hasArmor){
+  for(let i=0;i<3;i++)txt(5+i<health?"♥":"♡",101+i*13,33,5+i<health?"#dce8f4":"#7b8999",12);
+  // Tiny silver sword beside the bonus hearts
+  rect(143,22,2,10,"#eef5ff");rect(140,29,8,2,"#c5d2e2");rect(142,31,4,2,"#9a744d");
+ }
+ rect(197,5,118,34,"#152d39");rect(199,7,114,30,"#304b4e");
+ txt("SOUL "+Math.floor(soul)+"%",205,19,"#9ff6ee",10);
+ rect(205,23,100,5,"#25363c");rect(205,23,soul,5,"#63d9e7");txt("CRYSTALS "+crystals+"/8",205,34,"#fff0ad",9);
+ if(hasSword)txt("IRON SWORD",8,52,"#e1eaf2",9);
+ if(hasArmor)txt("SILVER HEART ARMOR",8,64,"#dce8f4",9);
+ if(caveEntered&&caveStage===0)txt("SKELETONS LEFT: "+skeletons.filter(s=>s.alive).length,8,77,"#e8d6ff",9);
+ if(saveFlash>0)txt("SAVED!",143,54,"#c7ffb7",10);
+}
+function drawDialogue(){
+ rect(5,177,310,57,"#101d2b");rect(7,179,306,53,"#384a55");rect(9,181,302,49,"#172c3a");
+ let words=dialogue.split(" "),line="",lines=[];
+ for(let w of words){let test=line?line+" "+w:w;if(test.length>43){lines.push(line);line=w}else line=test}
+ if(line)lines.push(line);
+ lines.slice(0,3).forEach((l,i)=>txt(l,17,198+i*14,"#fff4d3",11));
+ txt("E / ENTER",252,225,"#a8e8db",8);
+}
+function drawInventory(){
+ rect(22,22,276,196,"#111c2b");rect(26,26,268,188,"#50636a");rect(29,29,262,182,"#172c3c");
+ txt("YOUR INVENTORY",75,48,"#fff0b3",15);
+ rect(42,57,110,20,inventoryTab===0?"#746b8d":"#293b4b");rect(158,57,120,20,inventoryTab===1?"#746b8d":"#293b4b");
+ txt("WEAPONS",64,71,"#fff4cf",10);txt("ARMOR",197,71,"#fff4cf",10);
+ if(inventoryTab===0){
+  txt("EQUIPPED WEAPON",52,103,"#a5e7df",10);txt(hasSword?"IRON SWORD":"NO WEAPON",52,124,"#fff1cf",12);
+  txt("A trusty blade for your journey.",52,148,"#c8d3df",9);txt("ATTACK: "+(hasSword?"NORMAL":"UNARMED"),52,170,"#f5dca0",10);
+ }else{
+  txt("EQUIPPED ARMOR",52,103,"#a5e7df",10);
+  txt(hasArmor?"ANCIENT CAVE ARMOR":"NO ARMOR",52,124,hasArmor?"#ffe1a0":"#fff1cf",11);
+  txt(hasArmor?"+3 SILVER HEARTS":"BONUS HEALTH: 0",52,146,"#e6eaff",11);
+  txt(hasArmor?"A silver shield for your soul.":"Search the Deep Cavern for armor.",52,166,"#c8d3df",8);
+ }
+ txt("TAB: SWITCH PAGE",47,193,"#fff4c7",9);txt("I: CLOSE",208,193,"#a8e8db",9);
+}
+function drawTitle(){
+ rect(0,0,W,H,"#172e3b");
+ for(let i=0;i<60;i++)rect(i*47%W,i*31%H,2,2,i%3?"#7ac8c4":"#fff1b2");
+ txt("A LOST WORLD...",108,54,"#8be7dc",13);txt("S O U L B O U N D",56,100,"#f6e8ae",21);
+ txt("THE ORIGINAL",112,123,"#f2b96c",13);rect(111,139,98,2,"#7edbd4");txt("PRESS ENTER",111,174,"#fff",13);
+ txt("A PIXEL ADVENTURE",91,210,"#8eb7ad",11);
+}
+function drawMenu(){
+ rect(0,0,W,H,"#080b13");rect(25,22,270,196,"#394052");rect(30,27,260,186,"#151c2b");
+ txt("SOULBOUND MENU",75,51,"#ffe6a2",16);txt("THE ADVENTURE IS PAUSED",65,70,"#9db9c8",9);
+ const options=["RESUME ADVENTURE","LOAD CHECKPOINT","RESTART THE GAME"];
+ options.forEach((s,i)=>{let y=105+i*30;if(menuChoice===i){rect(49,y-14,222,22,"#56677c");txt(">",57,y+1,"#ffe69b",13)}txt(s,76,y+1,menuChoice===i?"#fff0b5":"#c2d0dc",11)});
+ txt("UP / DOWN TO SELECT",77,190,"#9aaec1",8);txt("ENTER: CONFIRM   M: CLOSE",53,204,"#9aaec1",8);
+}
+
+// AUTOMATIC END CREDITS
+function drawCredits(){
+ rect(0,0,W,H,"#080b16");
+ // drifting stars
+ for(let i=0;i<38;i++){
+  let x=(i*83+Math.sin(tick*.012+i)*8)%W;
+  let y=(i*47+tick*.08)%H;
+  rect(x,y,1+(i%3===0?1:0),1,"#8299b5");
+ }
+ // distant glowing horizon
+ ctx.globalAlpha=.13;rect(0,165,320,75,"#633f6e");ctx.globalAlpha=1;
+ let t=Math.min(1,creditsTime/105);
+ let ease=1-Math.pow(1-t,3);
+ let titleX=160-35*ease;
+ ctx.textAlign="center";
+ ctx.font="bold 20px monospace";
+ ctx.fillStyle="#f5e7b2";
+ ctx.fillText("SOULBOUND",titleX,104);
+ // red number 2 slides into the space beside the title
+ let twoX=260-(35*ease);
+ let twoSlide=Math.max(0,Math.min(1,(creditsTime-35)/75));
+ twoX=205+85*(1-(1-Math.pow(1-twoSlide,3)));
+ ctx.font="bold 43px monospace";
+ ctx.fillStyle="#ed394c";
+ ctx.fillText("2",twoX,108);
+ if(creditsTime>110){
+  let a=Math.min(1,(creditsTime-110)/45);
+  ctx.globalAlpha=a;ctx.font="bold 14px monospace";ctx.fillStyle="#ffe6a2";
+  ctx.fillText("COMING SOON!",160,145);
+  ctx.font="bold 8px monospace";ctx.fillStyle="#a8c4d5";
+  ctx.fillText("THANKS FOR PLAYING",160,190);
+  ctx.globalAlpha=1;
+ }
+ ctx.textAlign="left";
+}
+
+// STORY
+function enterCave(){
+ caveEntered=true;caveStage=0;player.x=160;player.y=190;player.dir=0;trapdoorTimer=0;
+ particles=[];texts=[];talk("You fall through the shrine! A hidden cave... and someone is waiting.");saveGame(true);
+}
+function beginKingSkelly(){
+ caveStage=1;bossIntro=220;bossX=310;bossY=120;bossHP=100;
+ secretPathOpen=false;lous.x=160;lous.y=88;player.x=160;player.y=170;player.dir=3;
+ talk("Lous: Wait... did you hear that?");saveGame(true);
+}
+function escapeToBigCave(){
+ caveStage=2;player.x=160;player.y=190;lous.x=125;lous.y=100;
+ bossIntro=0;dialogueTime=0;particlesAt(160,190,"#a78bfa",30);
+ talk("You squeeze through the tiny crack! King Skelly is too big to follow. You enter a gigantic cave...");
+ saveGame(true);
+}
+let lousRanAway=false;
+function startMagmaBoss(){
+ magmaActive=true;magmaHP=160;magmaX=255;magmaY=105;magmaAttack=0;
+ bossDefeated=false;player.x=155;player.y=165;player.dir=0;
+ particlesAt(255,105,"#ff652c",35);
+ talk("THE CAVERN SHAKES! THE MAGMA BOSS HAS AWAKENED!");
+ say("FINAL BOSS: MAGMA BOSS!");
+ saveGame(true);
+}
+function interact(){
+ if(!caveEntered&&!hasSword&&near(168,184,32)){
+  hasSword=true;particlesAt(168,184,"#e8f3ff",20);talk("You found the IRON SWORD! A powerful weapon.");saveGame();return;
+ }
+ if(!caveEntered&&near(npc.x,npc.y,32)){
+  talk(crystals<8?"Elder: Find the eight soul crystals hidden across the forest.":"Elder: The shrine demands ten. Be careful, traveller.");return;
+ }
+ if(!caveEntered&&near(shrine.x,shrine.y,42)){
+  if(crystals<8)talk("The shrine is sealed. Find all eight soul crystals first.");
+  else{talk("SHRINE: INSUFFICIENT SOULS. REQUIRED: 10. OFFERED: 8. YOU ARE NOT WELCOME.");trapdoorTimer=100}
+  return;
+ }
+ if(caveEntered&&caveStage===0&&near(lous.x,lous.y,42)){
+  if(skeletons.some(s=>s.alive))talk("Lous: Stay back! Those skeletons are still moving. Defeat all three!");
+  else beginKingSkelly();return;
+  return;
+ }
+ if(caveEntered&&caveStage===1){talk("Lous: THE LEFT WALL! Follow me! There's a tiny crack in it!");return}
+ if(caveEntered&&caveStage===2&&magmaActive&&!bossDefeated){
+  talk("The Magma Boss blocks the way! Defeat it!");return;
+ }
+ if(caveEntered&&caveStage===2&&!magmaActive&&armorCollected&&near(lous.x,lous.y,55)){
+  talk("Lous: You look nice! That armor suits you. Now... I have somewhere to be!");
+  lousRanAway=true;return;
+ }
+ if(caveEntered)talk("Lous: Keep moving. We are not safe yet.");
+}
+function drawAttack(){
+ if(attack<=0)return;
+ let x=caveEntered?player.x:player.x-camera.x,y=caveEntered?player.y:player.y-camera.y;
+ ctx.strokeStyle="#fff0a1";ctx.lineWidth=3;ctx.beginPath();ctx.arc(x,y,17,0,4.5);ctx.stroke();
+}
+function attackHit(){
+ if(!hasSword){talk("You need a weapon! Look around the starting area.");return}
+ if(attack>0)return;attack=15;
+ const d=[[0,-1],[1,0],[0,1],[-1,0]][player.dir];
+ function hit(e){
+  let dx=e.x-player.x,dy=e.y-player.y,dist=Math.hypot(dx,dy);
+  if(dist<40&&dist>0&&(dx*d[0]+dy*d[1])/dist>.25){
+   e.hp--;particlesAt(e.x,e.y,"#ded9c5",12);floatAt(e.x,e.y-12,"-1","#fff0a1");
+   if(e.hp<=0){e.alive=false;particlesAt(e.x,e.y,"#ded9c5",20);soul=Math.min(100,soul+10)}
+   return true;
+  }return false;
+ }
+ let hits=0;
+ if(caveEntered&&caveStage===0)skeletons.forEach(s=>{if(s.alive&&hit(s))hits++});
+ else if(!caveEntered)enemies.forEach(e=>{if(e.alive&&hit(e))hits++});
+ else if(caveEntered&&caveStage===2&&magmaActive&&!bossDefeated){
+  let dx=magmaX-player.x,dy=magmaY-player.y,dist=Math.hypot(dx,dy);
+  if(dist<49&&dist>0&&(dx*d[0]+dy*d[1])/dist>.05){
+   magmaHP=Math.max(0,magmaHP-12);hits++;
+   particlesAt(magmaX,magmaY,"#ff9b35",18);floatAt(magmaX,magmaY-28,"-12","#ffdd73");
+   if(magmaHP<=0){
+    bossDefeated=true;magmaActive=false;lousRanAway=true;
+    particlesAt(magmaX,magmaY,"#ff742e",65);
+    particlesAt(magmaX,magmaY,"#fff0a0",35);
+    talk("THE MAGMA BOSS HAS BEEN DEFEATED! THE CAVERN IS SAFE!");
+    creditsPending=true;saveGame(true);
+   }
+  }
+ }
+ if(hits){
+  if(caveEntered&&caveStage===0&&skeletons.every(s=>!s.alive)){talk("ALL THREE SKELETONS DEFEATED! Find Lous!");saveGame()}
+  else if(!magmaActive)say("IRON SWORD! A clean hit!");
+ }else if(!magmaActive)say("Whoosh! Face an enemy and get closer.");
+}
+
+// SAVE / LOAD
+function saveGame(silent=false){
+ const d={player:{x:player.x,y:player.y,dir:player.dir},crystals,health,soul,hasSword,hasArmor,armorCollected,
+ crystalSpots:crystalSpots.map(c=>c.got),enemies:enemies.map(e=>({hp:e.hp,alive:e.alive})),
+ skeletons:skeletons.map(s=>({hp:s.hp,alive:s.alive})),caveEntered,caveStage,oldStoryUnlocked,
+ bossIntro,bossX,bossY,bossHP,secretPathOpen,lous:{x:lous.x,y:lous.y},
+ lousRanAway,magmaHP,bossDefeated,magmaActive};
+ try{localStorage.setItem("soulbound_original_save",JSON.stringify(d));saveFlash=70;if(!silent)say("Checkpoint saved!")}
+ catch(e){if(!silent)say("Save unavailable in this browser.")}
+}
+function loadGame(){
+ try{
+  let raw=localStorage.getItem("soulbound_original_save");if(!raw)return false;
+  let d=JSON.parse(raw);if(!d.player)return false;
+  player.x=d.player.x;player.y=d.player.y;player.dir=d.player.dir??2;
+  crystals=d.crystals??0;health=d.health??5;soul=d.soul??100;hasSword=!!d.hasSword;
+  hasArmor=!!d.hasArmor;armorCollected=!!d.armorCollected;
+  crystalSpots.forEach((c,i)=>c.got=!!d.crystalSpots?.[i]);
+  enemies.forEach((e,i)=>{if(d.enemies?.[i])Object.assign(e,d.enemies[i])});
+  skeletons.forEach((s,i)=>{if(d.skeletons?.[i])Object.assign(s,d.skeletons[i])});
+  caveEntered=!!d.caveEntered;caveStage=d.caveStage??0;oldStoryUnlocked=!!d.oldStoryUnlocked;
+  bossIntro=d.bossIntro??0;bossX=d.bossX??300;bossY=d.bossY??120;bossHP=d.bossHP??100;
+  secretPathOpen=!!d.secretPathOpen;
+  if(d.lous){lous.x=d.lous.x;lous.y=d.lous.y}
+  lousRanAway=!!d.lousRanAway;magmaHP=d.magmaHP??160;
+  bossDefeated=!!d.bossDefeated;magmaActive=!!d.magmaActive;
+  if(bossDefeated){magmaActive=false;creditsPending=true}
+  if(caveEntered&&caveStage===0&&skeletons.every(s=>!s.alive))oldStoryUnlocked=true;
+  return true;
+ }catch(e){return false}
+}
+function loadCheckpoint(){
+ if(loadGame()){
+  particles=[];texts=[];attack=0;trapdoorTimer=0;inventory=false;menuOpen=false;dialogueTime=0;
+  if(!caveEntered)updateCamera();
+  say("CHECKPOINT RESTORED!");
+ }else say("No saved checkpoint yet!");
+}
+function resetGame(){
+ localStorage.removeItem("soulbound_original_save");
+ tick=0;crystals=0;health=5;soul=100;hasSword=false;hasArmor=false;armorCollected=false;
+ attack=0;dialogue="";dialogueTime=0;inventory=false;inventoryTab=0;menuOpen=false;menuChoice=0;
+ particles=[];texts=[];saveFlash=0;trapdoorTimer=0;caveEntered=false;caveStage=0;oldStoryUnlocked=false;
+ bossIntro=0;bossX=300;bossY=120;bossHP=100;secretPathOpen=false;bossDefeated=false;
+ magmaActive=false;magmaHP=160;magmaX=255;magmaY=105;magmaAttack=0;
+ lousRanAway=false;creditsPending=false;creditsTime=0;
+ player.x=144;player.y=160;player.dir=2;player.walk=0;player.hurt=0;
+ lous.x=160;lous.y=88;camera.x=0;camera.y=0;
+ crystalSpots.forEach(c=>c.got=false);
+ enemies.forEach((e,i)=>Object.assign(e,[{x:544,y:256,hp:3,max:3,alive:true},{x:624,y:400,hp:3,max:3,alive:true},{x:320,y:560,hp:4,max:4,alive:true},{x:816,y:560,hp:4,max:4,alive:true}][i]));
+ skeletons.forEach((s,i)=>Object.assign(s,[{x:92,y:105,hp:3,max:3,alive:true},{x:226,y:125,hp:3,max:3,alive:true},{x:158,y:48,hp:3,max:3,alive:true}][i]));
+ screen="game";updateCamera();say("A new adventure begins! Find the iron sword.");
+}
+function chooseMenu(){
+ if(menuChoice===0){menuOpen=false;say("Back to the adventure!")}
+ if(menuChoice===1){loadCheckpoint();menuOpen=false}
+ if(menuChoice===2){resetGame();talk("A fresh journey begins. Good luck, traveller!")}
+}
+
+// UPDATE
+function hurtPlayer(){
+ if(player.hurt>0)return;
+ health--;player.hurt=50;particlesAt(player.x,player.y,"#ff7676",12);
+ say("You were hit! Watch your health.");
+ if(health<=0){
+  health=hasArmor?8:5;
+  if(!caveEntered){player.x=144;player.y=160}
+  else if(caveStage===0){player.x=160;player.y=190}
+  else if(caveStage===1){player.x=145;player.y=170}
+  else{player.x=160;player.y=165}
+  soul=Math.max(0,soul-20);say("You woke up again. Keep going!");saveGame(true);
+ }
+}
+function updateBoss(){
+ if(bossIntro>0){
+  bossIntro--;
+  if(bossIntro===165){secretPathOpen=true;talk("LOUS: THE LEFT WALL! THERE'S A SECRET PATH! FOLLOW ME!")}
+  if(bossIntro<165){if(lous.x>43)lous.x-=1.15;if(lous.y<120)lous.y+=.42}
+  if(bossIntro===130){bossX=285;bossY=120;particlesAt(280,120,"#ff5367",35);say("KING SKELLY HAS SMASHED THROUGH THE WALL!")}
+  if(bossIntro===1)say("RUN! FOLLOW LOUS THROUGH THE LEFT CRACK!");
+  return;
+ }
+ let dx=player.x-bossX,dy=player.y-bossY,dist=Math.hypot(dx,dy)||1;
+ bossX+=dx/dist*.43;bossY+=dy/dist*.43;bossY=Math.max(55,Math.min(190,bossY));
+ if(dist<32&&tick%65===0)hurtPlayer();
+ if(secretPathOpen&&player.x<35&&player.y>103&&player.y<139)escapeToBigCave();
+}
+function updateMagma(){
+ if(!magmaActive||bossDefeated)return;
+ magmaAttack++;
+ let dx=player.x-magmaX,dy=player.y-magmaY,dist=Math.hypot(dx,dy)||1;
+ // The boss slowly stalks the player, with occasional lunges.
+ let speed=magmaAttack%150<35?1.05:.24;
+ magmaX+=dx/dist*speed;magmaY+=dy/dist*speed;
+ magmaX=Math.max(65,Math.min(270,magmaX));magmaY=Math.max(65,Math.min(180,magmaY));
+ if(dist<29&&tick%55===0)hurtPlayer();
+ if(magmaAttack%95===0){
+  particlesAt(magmaX,magmaY,"#ff6b28",20);
+  say("MAGMA BURST! Keep moving!");
+ }
+}
+function update(){
+ tick++;
+ if(screen==="credits"){
+  creditsTime++;
+  return;
+ }
+ if(screen!=="game"||menuOpen)return;
+ if(dialogueTime>0){
+  dialogueTime--;
+  if(dialogueTime===0&&creditsPending){
+   creditsPending=false;screen="credits";creditsTime=0;inventory=false;menuOpen=false;saveGame(true);return;
+  }
+ }
+ if(saveFlash>0)saveFlash--;if(player.hurt>0)player.hurt--;if(attack>0)attack--;
+ if(trapdoorTimer>0){trapdoorTimer--;if(trapdoorTimer===1)enterCave()}
+ if(tick%600===0)saveGame(true);
+ if(inventory)return;
+ let dx=0,dy=0;
+ if(keys.ArrowLeft||keys.KeyA){dx=-1;player.dir=3}
+ if(keys.ArrowRight||keys.KeyD){dx=1;player.dir=1}
+ if(keys.ArrowUp||keys.KeyW){dy=-1;player.dir=0}
+ if(keys.ArrowDown||keys.KeyS){dy=1;player.dir=2}
+ if(dx||dy){
+  let speed=(keys.ShiftLeft||keys.ShiftRight)&&soul>0?2.9:1.55,len=Math.hypot(dx,dy);
+  if(caveEntered){
+   let nx=player.x+dx/len*speed,ny=player.y+dy/len*speed;
+   let horizontalExit=caveStage===1&&secretPathOpen&&nx<43&&player.y>102&&player.y<140;
+   let verticalExit=caveStage===1&&secretPathOpen&&player.x<43&&ny>102&&ny<140;
+   if(dx&&!caveWall(nx,player.y,horizontalExit))player.x=nx;
+   if(dy&&!caveWall(player.x,ny,verticalExit))player.y=ny;
+  }else moveForest(dx/len*speed,dy/len*speed);
+  player.walk+=.3;
+  if((keys.ShiftLeft||keys.ShiftRight)&&tick%3===0&&soul>0)soul=Math.max(0,soul-.8);
+ }
+ if(!dx&&!dy&&soul<100&&tick%7===0)soul++;
+ if(caveEntered&&caveStage===0){
+  skeletons.forEach(s=>{
+   if(!s.alive)return;
+   let dist=Math.hypot(player.x-s.x,player.y-s.y);
+   if(dist<115){
+    let vx=(player.x-s.x)/(dist||1)*.38,vy=(player.y-s.y)/(dist||1)*.38;
+    if(!caveWall(s.x+vx,s.y,false))s.x+=vx;
+    if(!caveWall(s.x,s.y+vy,false))s.y+=vy;
+    if(dist<14&&tick%75===0)hurtPlayer();
+   }
+  });
+ }else if(caveEntered&&caveStage===1)updateBoss();
+ else if(caveEntered&&caveStage===2){
+  if(magmaActive)updateMagma();
+ }else if(!caveEntered){
+  enemies.forEach(e=>{
+   if(!e.alive)return;
+   let dist=Math.hypot(player.x-e.x,player.y-e.y);
+   if(dist<90){
+    let vx=(player.x-e.x)/(dist||1)*.42,vy=(player.y-e.y)/(dist||1)*.42;
+    if(!forestSolid(e.x+vx,e.y))e.x+=vx;if(!forestSolid(e.x,e.y+vy))e.y+=vy;
+    if(dist<13&&tick%65===0)hurtPlayer();
+   }
+  });
+  crystalSpots.forEach(c=>{
+   if(!c.got&&near(c.x,c.y,13)){
+    c.got=true;crystals++;soul=Math.min(100,soul+18);particlesAt(c.x,c.y,"#65f5ff",25);
+    say("SOUL CRYSTAL FOUND! "+crystals+"/8");if(crystals%2===0)saveGame(true);
+   }
+  });
+  updateCamera();
+ }
+ for(let i=particles.length-1;i>=0;i--){let p=particles[i];p.x+=p.vx;p.y+=p.vy;p.life--;if(p.life<=0)particles.splice(i,1)}
+ for(let i=texts.length-1;i>=0;i--){let f=texts[i];f.y-=.35;f.life--;if(f.life<=0)texts.splice(i,1)}
+}
+function caveWall(x,y,allowCrack){
+ if(caveStage===1){
+  if(x<25||x>295||y<25||y>215){
+   if(allowCrack&&x<43&&y>102&&y<140)return false;
+   return true;
+  }
+  return false;
+ }
+ if(caveStage===2)return x<14||x>306||y<24||y>220;
+ return x<29||x>291||y<30||y>211;
+}
+function drawParticles(){
+ particles.forEach(p=>rect(p.x-(caveEntered?0:camera.x),p.y-(caveEntered?0:camera.y),2,2,p.color));
+ texts.forEach(f=>txt(f.s,f.x-(caveEntered?0:camera.x),f.y-(caveEntered?0:camera.y),f.c,10));
+}
+function start(){
+ screen="game";
+ if(loadGame())say("Welcome back! Your saved adventure has loaded.");
+ else say("Find the iron sword near where you started!");
+ if(!caveEntered)updateCamera();
+}
+function loop(){
+ update();ctx.clearRect(0,0,W,H);
+ if(screen==="title")drawTitle();
+ else if(screen==="credits")drawCredits();
+ else if(caveEntered)drawCave();
+ else drawForest();
+ if(menuOpen)drawMenu();
+ requestAnimationFrame(loop);
+}
+
+// KEYBOARD
+document.addEventListener("keydown",e=>{
+ if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))e.preventDefault();
+ keys[e.code]=true;if(e.repeat)return;
+ if(screen==="title"&&e.code==="Enter"){start();return}
+ if(screen==="credits")return;
+ if(screen!=="game")return;
+ if(e.code==="KeyM"){
+  menuOpen=!menuOpen;inventory=false;menuChoice=0;
+  if(menuOpen)say("Game paused.");else say("Back to the adventure!");
+  return;
+ }
+ if(menuOpen){
+  if(e.code==="ArrowUp"||e.code==="KeyW")menuChoice=(menuChoice+2)%3;
+  if(e.code==="ArrowDown"||e.code==="KeyS")menuChoice=(menuChoice+1)%3;
+  if(e.code==="Enter"||e.code==="Space")chooseMenu();
+  if(e.code==="Escape"||e.code==="KeyM")menuOpen=false;
+  return;
+ }
+ if(e.code==="KeyI"){inventory=!inventory;return}
+ if(inventory&&e.code==="Tab"){inventoryTab=(inventoryTab+1)%2;return}
+ if(inventory&&e.code==="ArrowLeft"){inventoryTab=0;return}
+ if(inventory&&e.code==="ArrowRight"){inventoryTab=1;return}
+ if(e.code==="Enter"&&dialogueTime>0){
+  dialogueTime=0;
+  if(creditsPending){creditsPending=false;screen="credits";creditsTime=0}
+  return;
+ }
+ if(inventory)return;
+ if(e.code==="Space"){attackHit();return}
+ if(e.code==="KeyE"){
+  if(dialogueTime>0){
+   dialogueTime=0;
+   if(creditsPending){creditsPending=false;screen="credits";creditsTime=0}
+   return;
+  }
+  if(caveEntered&&caveStage===2&&!armorCollected&&near(70,180,28)){
+   hasArmor=true;armorCollected=true;health=Math.min(8,health+3);
+   particlesAt(70,180,"#f5d98a",30);
+   talk("ANCIENT ARMOR ACQUIRED! THREE SILVER HEARTS ADDED! ARMOR TIME!");
+   saveGame();return;
+  }
+  if(caveEntered&&caveStage===2&&armorCollected&&!magmaActive&&!bossDefeated&&!lousRanAway&&near(lous.x,lous.y,55)){
+   talk("Lous: You look nice! That armor suits you. Now... I have somewhere to be!");
+   lousRanAway=true;
+   return;
+  }
+  if(caveEntered&&caveStage===2&&armorCollected&&!magmaActive&&!bossDefeated&&lousRanAway){
+   startMagmaBoss();return;
+  }
+  interact();
+ }
+});
+document.addEventListener("keyup",e=>keys[e.code]=false);
+window.addEventListener("blur",()=>{for(let k in keys)keys[k]=false});
+window.addEventListener("beforeunload",()=>{if(screen==="game")saveGame(true)});
+canvas.addEventListener("click",()=>{if(screen==="title")start()});
+loop();
+})();
+</script>
+</body>
+</html>
